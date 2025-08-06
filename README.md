@@ -34,10 +34,20 @@ It includes:
 - **NTFSPermissions**  
   If set, NTFS permissions will also be replicated.
 
-- **PauseAtEnd**  
-  If set, wait until 'Enter' key is pressed at the end.
+## EXITCODES
+**0** : Replication completed successfully with no errors no warnings.
+**1** : Replication completed but with some warnings.
+**100** : Source and replica paths are the same
+**101** : Source path does not exist
+**102** : Replica directory creating failed
+**110** : General error
 
 ## Notes
+
+- **Version:** 1.1  
+- **Author:** Viktor Kravtsov  
+- **Creation Date:** 2025-08-06  
+- **Purpose/Change:** Minor fixes & optimizations
 
 - **Version:** 1.0  
 - **Author:** Viktor Kravtsov  
@@ -47,6 +57,4 @@ It includes:
 ## Examples
 
 ```powershell
-.\FolderReplication.ps1 -SourcePath "c:\TEMP\sources\" -ReplicaPath "\\localhost\d$\TEMP\replica" -LogFilePath 'c:\TEMP\' -MaxRetries 3 -NTFSPermissions
-
-.\FolderReplication.ps1 -SourcePath "C:\TEMP\qweqwe\source" -ReplicaPath "C:\TEMP\qweqwe\replica" -LogFilePath 'c:\TEMP\qweqwe' -PauseAtEnd
+.\FolderReplication.ps1 -SourcePath "C:\TEMP\source" -ReplicaPath "\\localhost\C$\TEMP\replica" -LogFilePath 'c:\TEMP' -VerboseLog -MaxRetries 3 -NTFSPermissions

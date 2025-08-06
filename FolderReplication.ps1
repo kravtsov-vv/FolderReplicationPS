@@ -26,32 +26,42 @@ Specifies the number of retry attempts for copying an item.
 Default: 5
 -NTFSPermissions
 If set, NTFS permissions will also be replicated.
--PauseAtEnd
-If set, wait until 'Enter' keypressed at the end
+
+.EXITCODES
+0 : Replication completed successfully with no errors no warnings.
+1 : Replication completed but with some warnings.
+100 : Source and replica paths are the same
+101 : Source path does not exist
+102 : Replica directory creating failed
+110 : General error
 
 .NOTES
-Version:          1.0
-Author:           Viktor Kravtsov
-Creation Date:    2025-08-04
-Purpose/Change:   Initial script development
+Version	: 1.1  
+Author	: Viktor Kravtsov  
+Date	: 2025-08-06  
+Purpose	: Minor fixes & optimizations
+
+Version	: 1.0  
+Author	: Viktor Kravtsov  
+Date	: 2025-08-04  
+Purpose	: Initial script development
 
 .EXAMPLE
-.\FolderReplication.ps1 -SourcePath "c:\TEMP\sources\" -ReplicaPath "\\localhost\d$\TEMP\replica" -LogFilePath 'c:\TEMP\' -MaxRetries 3 -NTFSPermissions
-.\FolderReplication.ps1 -SourcePath "C:\TEMP\qweqwe\source" -ReplicaPath "C:\TEMP\qweqwe\replica" -LogFilePath 'c:\TEMP\qweqwe' -PauseAtEnd
+.\FolderReplication.ps1 -SourcePath "C:\TEMP\source" -ReplicaPath "\\localhost\C$\TEMP\replica" -LogFilePath 'c:\TEMP' -VerboseLog -MaxRetries 3 -NTFSPermissions
 
 #>
 
 Param (
     [Parameter(Mandatory = $True)]
     [ValidateNotNullOrEmpty()]
-    [string]$SourcePath = "C:\TEMP\qweqwe\source",
+    [string]$SourcePath,
 
     [Parameter(Mandatory = $True)]
     [ValidateNotNullOrEmpty()]
-    [string]$ReplicaPath = "C:\TEMP\qweqwe\replica",
+    [string]$ReplicaPath,
 
-    [Parameter(Mandatory = $True)]
-    [string]$LogFilePath = "C:\TEMP\qweqwe\",
+    [Parameter(Mandatory = $False)]
+    [string]$LogFilePath,
 
     [Parameter(Mandatory = $False)]
     [ValidateNotNullOrEmpty()]
@@ -61,48 +71,84 @@ Param (
     [switch]$NTFSPermissions,
 
     [Parameter(Mandatory = $False)]
-    [switch]$PauseAtEnd,
-
-    [Parameter(Mandatory = $False)]
     [switch]$VerboseLog
 
 )
 
+############# VARIABLES #######################################
+    $global:N_err = 0
+    $global:N_wrn = 0
+
+
+function SetLogging {
+    param (
+        [string]$LogFilePath,
+        [string]$LogFileName
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($LogFilePath)) {
+        # If LogFilePath is an existing directory
+        if ((Test-Path $LogFilePath) -and ((Get-Item $LogFilePath).PSIsContainer)) {
+            $LogFilePath = Join-Path $LogFilePath $LogFileName
+            if (-not (Test-Path $LogFilePath)) {
+                New-Item -ItemType File -Path $LogFilePath | Out-Null
+            }
+        }
+        # If LogFilePath is an non-existing directory
+        elseif ($LogFilePath -notlike "*.*") {
+            New-Item -ItemType Directory -Path $LogFilePath | Out-Null
+            $LogFilePath = Join-Path $LogFilePath $LogFileName
+            if (-not (Test-Path $LogFilePath)) {
+                New-Item -ItemType File -Path $LogFilePath | Out-Null
+            }
+        }
+        # If LogFilePath looks like a file, ensure it exists
+        elseif (-not (Test-Path $LogFilePath)) {
+            $FolderPath = Split-Path $LogFilePath
+            if (-not (Test-Path $FolderPath)) {New-Item -ItemType Directory -Path $FolderPath -Force | Out-Null}
+            New-Item -ItemType File -Path $LogFilePath | Out-Null
+            }
+    
+    }
+    return $LogFilePath
+}
+
+############# FUNCTIONS #######################################
 function WriteLog {
     param(
         [string]$Message,
         [string]$Type = "Info"  # Info, Error, Warning, Success
     )
-    $msg = ((Get-Date -Format "yyyy-MM-dd HH:mm:ss K") + "(UTC) : [$Type]   : $Message")
+    $msg = ((Get-Date -Format "yyyy-MM-dd HH:mm:ss K") + "(UTC) | [$Type] | $Message")
     if (-not [string]::IsNullOrWhiteSpace($LogFilePath)) {
         Add-Content -Path $LogFilePath -Value $msg
     }
     switch ($Type) {
-        "Error" { Write-Host $msg -ForegroundColor Red }
-        "Warning" { Write-Host $msg -ForegroundColor Yellow }
-        "Success" { Write-Host $msg -ForegroundColor Green }
+        "Fail" { Write-Host $msg -ForegroundColor Red }
+        "Warn" { Write-Host $msg -ForegroundColor Yellow }
+        "Done" { Write-Host $msg -ForegroundColor Green }
         default { Write-Host $msg -ForegroundColor White }
     }
 }
 
-function ReplicateFolder {
+function FoldersCheck {
     # Validate source and replica paths are not the same
     if ($SourcePath.TrimEnd('\') -ieq $ReplicaPath.TrimEnd('\')) {
-        WriteLog "Source and replica paths must not be the same. Script terminated." "Error"
+        WriteLog "Source and replica paths must not be the same. Script terminated." "Fail"
         $global:N_err++
-        return
+        exit 100
     }
 
     # check source 
     if (!(Test-Path -LiteralPath $SourcePath)) {
-        WriteLog "Source path does not exist: $SourcePath. Script terminated." "Error"
+        WriteLog "Source path does not exist: $SourcePath. Script terminated." "Fail"
         $global:N_err++
-        return
+        exit 101
     }
 
     # check replica
     if (Test-Path -LiteralPath $ReplicaPath) {
-        WriteLog "Replica directory exist: $ReplicaPath" "Info"
+        if ($VerboseLog) {WriteLog "Replica folder exist: $ReplicaPath" "Info"}
         # replica cleanup
         Get-ChildItem -Path $ReplicaPath -Recurse -Force | ForEach-Object {
             try {
@@ -111,25 +157,36 @@ function ReplicateFolder {
                 Remove-Item -Path $_.FullName -Recurse -Force
                 WriteLog "Replica folder cleanup, deleted : $($_.FullName)" "Info"
             } catch {
-                WriteLog "Failed to delete: $($_.FullName) - $($_.Exception.Message)" "Warning"
-                $global:N_wrn++
+				try{
+					Start-Sleep -Seconds (2)
+					Remove-Item -Path $_.FullName -Recurse -Force
+				}
+                catch {
+					WriteLog "Failed to delete: $($_.FullName) - $($_.Exception.Message)" "Warn"
+					$global:N_wrn++
+				}	
             }
         }
     }
     else {
-        WriteLog "Replica directory doesnt exist: $ReplicaPath, creating..." "Info" 
+        WriteLog "Replica folder doesnt exist: $ReplicaPath, creating..." "Info"
         New-Item -ItemType Directory -Path $ReplicaPath | Out-Null
-        if (Test-Path -LiteralPath $ReplicaPath) { WriteLog "Created replica directory: $ReplicaPath" "Info" }
+        if (Test-Path -LiteralPath $ReplicaPath) { if ($VerboseLog) {WriteLog "Created replica directory: $ReplicaPath" "Info" }}
         else {
-            WriteLog "Replica directory creating failed: $ReplicaPath. Script terminated." "Error"
+            WriteLog "Replica directory creating failed: $ReplicaPath. Script terminated." "Fail"
             $global:N_err++
-            return
+            exit 102
         }    
     }
 
-    WriteLog "Content copying started" "Info"
+}
 
+
+
+function ReplicateFolder {
     $paths = @()
+    if ($VerboseLog) {WriteLog "Content copying started" "Info"}
+
     Get-ChildItem -Path $SourcePath -Recurse -Force | ForEach-Object {
         $item = $_
         try {
@@ -161,39 +218,45 @@ function ReplicateFolder {
                         else {
                             Start-Sleep -Seconds (Get-Random -Minimum 1 -Maximum 4)
                             Remove-Item -Path $targetPath -Recurse -Force
-                            WriteLog "HASH MISMATCH (Attempt $($attempt + 1)): $($item.FullName), replica deleted" "Warning"
+                            WriteLog "HASH MISMATCH (Attempt $($attempt + 1)): $($targetPath), replica deleted" "Warn"
                             $global:N_wrn++
                         }
                     }
                     catch {
-                        WriteLog "ERROR copying (Attempt $($attempt + 1)): $($item.FullName) - $($_.Exception.Message)" "Error"
+                        WriteLog "ERROR copying (Attempt $($attempt + 1)): $($item.FullName) - $($_.Exception.Message)" "Fail"
                         $global:N_err++
+                         Start-Sleep -Seconds (Get-Random -Minimum 1 -Maximum 4)
                     }
                     $attempt++
 
                 }
 
                 if (-not $success) {
-                    WriteLog "FAILED after $MaxRetries attempts: $($item.FullName)" "Error"
+                    WriteLog "FAILED after $MaxRetries attempts: $($item.FullName)" "Fail"
                     $global:N_err++
+					
                 }
             }
         }
         catch {
-            WriteLog "ERROR processing item: $($item.FullName) - $($_.Exception.Message)" "Error"
+            WriteLog "ERROR processing item: $($item.FullName) - $($_.Exception.Message)" "Fail"
             $global:N_err++
+
         }
     }
+    if ($VerboseLog) {WriteLog "Copy and verification completed" "Info"}
+    if ($VerboseLog) {WriteLog "Folders attributes replication started" "Info"}
     foreach ($path in $paths) {
         try {
             get-item $path.sourcepath -Force | ReplicateAttributes -dst $path.targetpath
         } catch {
-            WriteLog "ERROR replicating attributes for: $($path.sourcepath) - $($_.Exception.Message)" "Warning"
+            WriteLog "ERROR replicating attributes for: $($path.sourcepath) - $($_.Exception.Message)" "Warn"
             $global:N_wrn++
         }
+		
     }
+	if ($VerboseLog) {WriteLog "Folders attributes replication completed." "Info"}
 
-    WriteLog "Copy and verification completed" "Info"
 }
 
 function ReplicateAttributes {
@@ -237,51 +300,27 @@ function ReplicateAttributes {
                 Set-Acl -Path $dstObj.Fullname -AclObject $acl
             if ($VerboseLog) {WriteLog "NTFS permissions replicated: $($src.FullName) -> $($dstObj.FullName)" "Info"}
             } catch {
-                WriteLog "ERROR setting NTFS permissions: $($src.FullName) - $($_.Exception.Message)" "Warning"
+                WriteLog "ERROR setting NTFS permissions: $($src.FullName) - $($_.Exception.Message)" "Warn"
                 $global:N_wrn++
             }
         }
     }
     catch {
-        WriteLog "ERROR attribs replication: $($src.FullName) - $($_.Exception.Message)" "Warning"
+        WriteLog "ERROR attribs replication: $($src.FullName) - $($_.Exception.Message)" "Warn"
         $global:N_wrn++
     }
 }
 
-############# SET LOGS ########################################
-
-if (-not [string]::IsNullOrWhiteSpace($LogFilePath)) {
-    # If LogFilePath is an existing directory
-    if ((Test-Path $LogFilePath) -and ((Get-Item $LogFilePath).PSIsContainer)) {
-        $LogFilePath = Join-Path $LogFilePath 'FolderReplication.log'
-        if (-not (Test-Path $LogFilePath)) {
-            New-Item -ItemType File -Path $LogFilePath | Out-Null
-        }
-    }
-    # If LogFilePath is an non-existing directory
-    elseif ($LogFilePath -notlike "*.*") {
-        New-Item -ItemType Directory -Path $LogFilePath | Out-Null
-        $LogFilePath = Join-Path $LogFilePath 'FolderReplication.log'
-        if (-not (Test-Path $LogFilePath)) {
-            New-Item -ItemType File -Path $LogFilePath | Out-Null
-        }
-    }
-    # If LogFilePath looks like a file, ensure it exists
-    elseif (-not (Test-Path $LogFilePath)) {
-        $FolderPath = Split-Path $LogFilePath
-        if (-not (Test-Path $FolderPath)) {New-Item -ItemType Directory -Path $FolderPath -Force | Out-Null}
-        New-Item -ItemType File -Path $LogFilePath | Out-Null
-        }
-    
-}
 
 ############# MAIN EXECUTION ##################################
 
 try {
     Clear-Host
-    $global:N_err = 0
-    $global:N_wrn = 0
+	
+	$LogFilePath = SetLogging $LogFilePath 'FolderReplication.log'
 
+if ($VerboseLog) {
+    WriteLog "========================START========================" "Info"
     WriteLog "$env:COMPUTERNAME/$env:USERNAME" "Info"
     WriteLog "Source path: $SourcePath" "Info"
     WriteLog "Target path: $ReplicaPath" "Info"
@@ -289,21 +328,28 @@ try {
     WriteLog "Verbose Logging: $VerboseLog" "Info"
     WriteLog "Max attempts to copy content: $MaxRetries" "Info"
     WriteLog "Copy NTFS permissions: $NTFSPermissions" "Info"
-    WriteLog "Pause at the end: $PauseAtEnd" "Info"
-    
-    WriteLog "========================START========================" "Info"
+}
+    FoldersCheck
 
     ReplicateFolder
 
     if (($N_err -eq 0) -and ($N_wrn -eq 0)) {
-        WriteLog "Replication completed successfully with $global:N_err errors $global:N_wrn warnings." "Success"
+		if ($VerboseLog) {
+			WriteLog "Replication completed successfully with $global:N_err errors $global:N_wrn warnings." "Done"
+			WriteLog "========================END==========================" "Info"
+		}
+		Exit 0
     } else {
-        WriteLog "Replication completed with $global:N_err errors $global:N_wrn warnings." "Warning"
+        if ($VerboseLog) {
+			WriteLog "Replication completed with $global:N_err errors $global:N_wrn warnings." "Warn"
+			WriteLog "========================END==========================" "Info"
+		}
+		Exit 1
     }
-    WriteLog "========================END==========================" "Info"
 
-    if ($PauseAtEnd) {
-        $null = Read-Host 'Press ENTER for exit...'
-    }
+
 }
-catch { WriteLog "$_" "Error"}
+catch { 
+	WriteLog "$_" "Fail"
+	Exit 110
+}
