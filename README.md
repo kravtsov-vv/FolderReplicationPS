@@ -25,7 +25,7 @@ It includes:
   If left empty, operations will be logged to the console only.
 
 - **VerboseLog**  
-  Include in log additional info. If param not used, only file/folder oprepations logged.
+  Include in log additional info. If param not used, only file/folder operations logged.
 
 - **MaxRetries**  
   Specifies the number of retry attempts for copying an item.  
